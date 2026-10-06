@@ -1,0 +1,14 @@
+import {readFile,mkdir,writeFile} from 'node:fs/promises';
+import {XMLParser} from 'fast-xml-parser';
+import type {StigDataset,StigRule} from '../src/types.js';
+const text=(v:unknown):string=>typeof v==='string'?v.trim():(v&&typeof v==='object'&&'#text'in v?String((v as Record<string,unknown>)['#text']).trim():'');
+const arr=<T>(v:T|T[]|undefined):T[]=>v===undefined?[]:Array.isArray(v)?v:[v];
+const clean=(v:unknown)=>text(v).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+function category(title:string,fix:string){const s=`${title} ${fix}`.toLowerCase();const groups:[string,string[]][]=[['Authentifizierung & Konten',['password','account','credential','logon','authentication','windows hello']],['BitLocker & Verschlüsselung',['bitlocker','encryption','fve','tpm']],['Microsoft Defender',['defender','antivirus','exploit guard','smartscreen']],['Firewall & Netzwerk',['firewall','network','smb','winrm','remote desktop','rdp','ipv6']],['Überwachung & Protokollierung',['audit','event log','logging']],['Geräte & Datenträger',['removable','device','drive','volume','autoplay','autorun']],['Anwendungen & Browser',['edge','application','applocker','installer','store']],['Systemhärtung',['registry','group policy','security option','system']]];return groups.find(([,w])=>w.some(x=>s.includes(x)))?.[0]??'Sonstige Anforderungen'}
+function registry(check:string){const pick=(label:string)=>check.match(new RegExp(`${label}:\\s*([^\\n\\r]+)`,'i'))?.[1]?.trim()??'';const hive=pick('Registry Hive');return hive?{hive,path:pick('Registry Path'),name:pick('Value Name'),type:pick('Type'),value:pick('Value')}:undefined}
+const xml=await readFile('U_MS_Windows_11_STIG_V2R11_Manual-xccdf.xml','utf8');
+const benchmark=new XMLParser({ignoreAttributes:false,attributeNamePrefix:'@_',parseTagValue:false,trimValues:true}).parse(xml).Benchmark;
+const rules:StigRule[]=arr<Record<string,unknown>>(benchmark.Group).flatMap(group=>{const rule=group.Rule as Record<string,unknown>|undefined;if(!rule)return[];const check=text((rule.check as Record<string,unknown>|undefined)?.['check-content']);const fix=text(rule.fixtext);const title=text(rule.title);return[{id:String(group['@_id']??''),ruleId:String(rule['@_id']??''),stigId:text(rule.version),srgId:text(group.title),title,severity:String(rule['@_severity']??'medium') as StigRule['severity'],category:category(title,fix),cci:arr(rule.ident).map(text),discussion:clean(rule.description),check,fix,registry:registry(check)}]});
+const releaseNodes=arr<Record<string,unknown>>(benchmark['plain-text']);
+const dataset:StigDataset={benchmark:{title:text(benchmark.title),version:text(benchmark.version),release:text(releaseNodes.find(p=>p['@_id']==='release-info')),date:String(benchmark.status?.['@_date']??'')},rules};
+await mkdir('src/data',{recursive:true});await writeFile('src/data/stig.json',JSON.stringify(dataset));console.log(`Generated ${rules.length} rules in src/data/stig.json`);
