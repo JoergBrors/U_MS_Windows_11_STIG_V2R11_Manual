@@ -154,6 +154,7 @@ ${JSON.stringify(unresolved.map(({id,stigId,title,discussion,check,fix,registry}
     return res.json({mappings:[...documented,...complete],source:documented.length?`microsoft-learn+${aiSource}`:aiSource,coverage:{requested:rules.length,returned:documented.length+complete.length}});
   }catch(error){return res.status(500).json({error:error instanceof Error?error.message:'Unbekannter Fehler'});}
 });
+app.get('/healthz',(_req,res)=>res.json({ok:true}));
 const distDir=fileURLToPath(new URL('../dist',import.meta.url));
 if(existsSync(path.join(distDir,'index.html'))){app.use(express.static(distDir));app.use((req,res,next)=>{if(req.method!=='GET'||req.path.startsWith('/api/'))return next();res.sendFile(path.join(distDir,'index.html'))})}
 const port=Number(process.env.PORT??8787);

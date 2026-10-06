@@ -95,3 +95,12 @@ Vorgehen:
 5. Gewünschte Policies auswählen, optional mit KI erklären lassen und das Auswahlpaket exportieren.
 
 Die ZIP-Datei und ihre Policy-Inhalte werden ausschließlich lokal im Browser verarbeitet und nicht zum Server übertragen. Das Repository enthält deshalb weder das originale Intune Policy Package noch daraus generierte Metadaten. Beim Austausch eines Pakets muss immer geprüft werden, ob die jeweilige STIG- und Policy-Version zur vorgesehenen Zielumgebung passt; gleichnamige Policies unterschiedlicher Releases sind nicht automatisch austauschbar. Jede zusammengestellte Auswahl muss vor dem Produktiveinsatz in einer repräsentativen Testumgebung geprüft werden.
+
+## Deployment auf Azure (Web App Free Tier)
+
+`scripts/Deploy-AzureWebApp.ps1` (PowerShell 7 + Azure CLI, Windows/macOS/Linux) legt Resource Group, App Service Plan (F1), Web App mit Managed Identity, Key Vault und eine Entra-App-Registrierung an und deployt die Anwendung.
+
+1. `scripts/infrastructure.json.example` nach `scripts/infrastructure.json` kopieren und anpassen (`webApp.name` und `keyVault.name` müssen weltweit eindeutig sein; `entra.assignedUsers`/`assignedGroups` bestimmen, wer sich anmelden darf).
+2. `pwsh ./scripts/Deploy-AzureWebApp.ps1 -ConfigPath ./scripts/infrastructure.json`
+
+Alle Werte der lokalen `.env` werden als Secrets in den Key Vault übertragen und der Web App nur als Key-Vault-Referenzen bereitgestellt. Die Managed Identity liest sie per RBAC (Rolle „Key Vault Secrets User“). Das Client-Secret der Entra-Anmeldung wird vom Skript erzeugt und ebenfalls nur im Key Vault abgelegt. Einen bereits vorhandenen Linux-App-Service-Plan verwenden Sie mit `-SelectPlan` (interaktive Auswahl) oder über `appServicePlan.name`, `appServicePlan.resourceGroup` und `appServicePlan.useExisting` in der JSON. Mit `-DryRun` wird nur geprüft und das Paket lokal gebaut. Der angemeldete Azure-Benutzer braucht Rechte für Rollenzuweisungen auf der Resource Group sowie zum Anlegen von App-Registrierungen und zum Zuweisen von Benutzern.

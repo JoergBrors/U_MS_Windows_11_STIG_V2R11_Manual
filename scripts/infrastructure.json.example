@@ -1,5 +1,5 @@
 {
-  "_comment": "Kopieren nach scripts/infrastructure.json und anpassen. Keine Geheimnisse in diese Datei schreiben.",
+  "_comment": "Kopieren nach scripts/infrastructure.json und anpassen. Keine Geheimnisse in diese Datei schreiben: Werte aus der .env landen im Key Vault, das Entra-Client-Secret wird vom Skript erzeugt und ebenfalls dort abgelegt.",
   "subscriptionId": "",
   "resourceGroup": "rg-policy-studio",
   "location": "westeurope",
@@ -8,7 +8,9 @@
   },
   "appServicePlan": {
     "name": "asp-policy-studio",
-    "sku": "F1"
+    "sku": "F1",
+    "resourceGroup": "",
+    "useExisting": false
   },
   "webApp": {
     "name": "policy-studio-CHANGE-ME",
@@ -20,11 +22,34 @@
   "appSettings": {
     "NODE_ENV": "production"
   },
-  "appSettingsFromEnvironment": [],
+  "keyVault": {
+    "name": "kv-policy-CHANGE-ME",
+    "sku": "standard",
+    "retentionDays": 7,
+    "purgeProtection": false,
+    "envFile": "../.env",
+    "envExclude": ["PORT"]
+  },
+  "entra": {
+    "enabled": true,
+    "application": {
+      "displayName": "Policy Studio",
+      "signInAudience": "AzureADMyOrg",
+      "additionalRedirectUris": []
+    },
+    "clientSecret": {
+      "secretName": "entra-client-secret",
+      "validityYears": 1
+    },
+    "assignmentRequired": true,
+    "assignedUsers": [],
+    "assignedGroups": [],
+    "excludedPaths": ["/healthz"]
+  },
   "allowedIpRanges": [],
   "deployment": {
     "buildFrontend": true,
-    "healthCheckPath": "/api/health",
+    "healthCheckPath": "/healthz",
     "healthCheckTimeoutSeconds": 300
   }
 }
