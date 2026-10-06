@@ -22,7 +22,7 @@ export const depthOptions:{id:Depth;label:string;hint:string;effort:'low'|'mediu
  {id:'deep',label:'Gründlich',hint:'Hoher Denkaufwand, langsamer',effort:'high'}
 ];
 export const defaultProviderProfile=():ProviderProfile=>({templateId:'intune_first',instructions:'',strictness:'balanced',depth:'standard'});
-export const defaultProfile=():AnalysisProfile=>({azure:defaultProviderProfile(),openai:defaultProviderProfile(),google:defaultProviderProfile()});
+export const defaultProfile=():AnalysisProfile=>({azure:defaultProviderProfile(),openai:defaultProviderProfile(),google:defaultProviderProfile(),anthropic:defaultProviderProfile(),foundry:defaultProviderProfile()});
 export function sanitizeProfile(value:unknown):ProviderProfile{
  const v=(value&&typeof value==='object'?value:{})as Record<string,unknown>;const d=defaultProviderProfile();
  return{templateId:templates.some(t=>t.id===v.templateId)?String(v.templateId):d.templateId,instructions:typeof v.instructions==='string'?v.instructions.slice(0,4000):'',strictness:strictnessOptions.some(o=>o.id===v.strictness)?v.strictness as Strictness:d.strictness,depth:depthOptions.some(o=>o.id===v.depth)?v.depth as Depth:d.depth};

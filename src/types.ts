@@ -7,8 +7,8 @@ export interface StigDataset{benchmark:{title:string;version:string;release:stri
 export interface PackagePolicy{id:string;name:string;version:string;category:string;product:string;platform:string;description:string;settings?:number;technology:string;sourceFile:string;fileSize:number}
 export interface PackageDataset{package:{name:string;release:string;scope:string;warning:string;guidance:string;knownIssues:string[]};policies:PackagePolicy[]}
 export interface PackageAssessment extends AutomationPlan{id:string;purpose:string;recommendation:string;dependencies:string[];risks:string[];confidence:'high'|'medium'|'low'}
-export type AiProvider='azure'|'openai'|'google';
-export interface AiConfig{provider:AiProvider;apiKey:string;endpoint:string;model:string}
+export type AiProvider='azure'|'openai'|'google'|'anthropic'|'foundry';
+export interface AiConfig{provider:AiProvider;apiKey:string;endpoint:string;model:string;authMethod?:'apiKey'|'entra'}
 
 export type AppMeta={name:string;version:string;description:string;author:string;contact:string;license:string;repositoryUrl:string};
 export type RunMapping=CspMapping&{id:string};

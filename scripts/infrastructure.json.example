@@ -46,6 +46,9 @@
     "assignedGroups": [],
     "excludedPaths": ["/healthz"]
   },
+  "foundry": {
+    "resourceId": ""
+  },
   "allowedIpRanges": [],
   "deployment": {
     "buildFrontend": true,

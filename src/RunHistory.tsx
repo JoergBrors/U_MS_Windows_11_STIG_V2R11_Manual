@@ -4,7 +4,7 @@ import ScriptExample from'./ScriptExample';
 import type{RunMapping,RunRecord}from'./types';
 import{strictnessOptions,templates}from'./analysisProfile';
 
-const providerLabel={azure:'Azure OpenAI',openai:'OpenAI',google:'Google AI'};
+const providerLabel={azure:'Azure OpenAI',openai:'OpenAI',google:'Google AI',anthropic:'Claude',foundry:'Azure Claude'};
 const targetLabel:Record<string,string>={intune_policy:'Intune-Richtlinie',entra_portal:'Entra-Portal/API',m365_portal:'Microsoft-365-Portal',configuration_management:'Konfigurationsmanagement',native_api:'Hersteller-API',os_native:'Betriebssystem-Konfiguration',application_configuration:'Anwendungskonfiguration',cloud_portal:'Cloud-Portal/API',local_script:'Lokales Skript',manual_only:'Manuell',not_applicable:'Nicht anwendbar'};
 const templateName=(id:string)=>templates.find(t=>t.id===id)?.label??id;const strictName=(id:string)=>strictnessOptions.find(o=>o.id===id)?.label??id;
 const formatTime=(iso:string)=>new Date(iso).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});

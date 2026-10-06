@@ -199,6 +199,7 @@ $vaultPurge    = [bool](Get-Setting $vaultConfig 'purgeProtection' $false)
 $envFileSetting = Get-Setting $vaultConfig 'envFile' '../.env'
 $envExclude    = @(Get-Setting $vaultConfig 'envExclude' @('PORT'))
 
+$foundryResourceId = Get-Setting (Get-Setting $config 'foundry') 'resourceId' ''
 $entra         = Get-Setting $config 'entra'
 $entraEnabled  = [bool](Get-Setting $entra 'enabled' $false)
 $entraApp      = Get-Setting $entra 'application'
@@ -273,7 +274,7 @@ if ($SelectPlan) {
   Write-Step 'Vorhandene App Service Pläne (Linux) auswählen'
   if ($DryRun) { Write-Note '[DryRun] würde die Pläne der Subscription auflisten' }
   else {
-    $plans = @(Invoke-AzJson appservice plan list --query "[?reserved].{name:name,resourceGroup:resourceGroup,sku:sku.name,location:location,apps:numberOfSites}")
+    $plans = @(Invoke-AzJson appservice plan list --query "[?reserved || contains(to_string(kind), 'linux')].{name:name,resourceGroup:resourceGroup,sku:sku.name,location:location,apps:numberOfSites}")
     if ($plans.Count -eq 0) { Write-Note 'Keine Linux-Pläne gefunden, ein neuer Plan wird angelegt.' }
     else {
       if ([Console]::IsInputRedirected) { throw 'Die Auswahl braucht eine interaktive Eingabe. Setze stattdessen appServicePlan.name, appServicePlan.resourceGroup und appServicePlan.useExisting in der JSON.' }
@@ -293,8 +294,12 @@ Write-Step "App Service Plan '$planName' (Linux)"
 $planId = "/subscriptions/$subscription/resourceGroups/$planResourceGroup/providers/Microsoft.Web/serverfarms/$planName"
 if ($DryRun) { Write-Note "[DryRun] würde Plan in '$planResourceGroup' prüfen und bei Bedarf anlegen ($sku)" }
 elseif (Test-Az appservice plan show --name $planName --resource-group $planResourceGroup) {
-  $plan = Invoke-AzJson appservice plan show --name $planName --resource-group $planResourceGroup --query "{sku:sku.name,reserved:reserved,location:location,apps:numberOfSites}"
-  if (-not $plan.reserved) { throw "Der vorhandene Plan '$planName' ist kein Linux-Plan. Die Web App benötigt einen Linux-Plan (Runtime $runtime)." }
+  $plan = Invoke-AzJson appservice plan show --name $planName --resource-group $planResourceGroup --query "{sku:sku.name,reserved:reserved,kind:kind,location:location,apps:numberOfSites}"
+  # Linux erkennt man je nach API-Version an reserved=true oder kind=linux; fehlen beide Angaben, wird nicht abgebrochen.
+  $planIsLinux = [bool]$plan.reserved -or "$($plan.kind)" -match 'linux'
+  $osKnown = $null -ne $plan.reserved -or -not [string]::IsNullOrEmpty("$($plan.kind)")
+  if ($osKnown -and -not $planIsLinux) { throw "Der vorhandene Plan '$planName' ist laut Azure kein Linux-Plan (reserved=$($plan.reserved), kind=$($plan.kind)). Die Web App benötigt einen Linux-Plan (Runtime $runtime)." }
+  if (-not $osKnown) { Write-Warning "Azure liefert für den Plan '$planName' keine Angabe zum Betriebssystem. Es wird ein Linux-Plan angenommen." }
   Write-Note "vorhanden und wird verwendet: $($plan.sku), $($plan.location), $($plan.apps) Apps, Resource Group '$planResourceGroup'"
   if ($plan.sku -ne 'F1') { Write-Warning "Der Plan hat die SKU $($plan.sku) und ist nicht kostenfrei. Die Web App läuft auf diesem Plan und teilt dessen Kosten und Kapazität." }
 }
@@ -336,6 +341,11 @@ else {
   $principalId = Invoke-AzTsv webapp identity show --name $appName --resource-group $resourceGroup --query principalId
   New-RoleAssignmentIfMissing $principalId 'ServicePrincipal' 'Key Vault Secrets User' $vaultId
   Write-Note "Managed Identity $principalId darf Secrets lesen (Key Vault Secrets User)"
+  # Optional: Entra-ID-Zugriff auf Claude in Microsoft Foundry (FOUNDRY_AUTH=entra) ohne API-Schlüssel.
+  if ($foundryResourceId) {
+    New-RoleAssignmentIfMissing $principalId 'ServicePrincipal' 'Cognitive Services User' $foundryResourceId
+    Write-Note 'Managed Identity darf die Foundry-Ressource aufrufen (Cognitive Services User)'
+  }
 
   # Vorhandene Konfiguration bleibt unangetastet; gesetzt wird nur, was fehlt oder sicherer wird (-OverwriteExisting erzwingt die JSON-Werte).
   $current = Invoke-AzJson webapp config show --name $appName --resource-group $resourceGroup --query '{startup:appCommandLine,minTls:minTlsVersion,http2:http20Enabled}'
@@ -600,7 +610,7 @@ try {
   $runtimePackage = [ordered]@{
     name = $rootPackage.name; version = $rootPackage.version; private = $true; type = 'module'
     scripts = [ordered]@{ start = 'tsx server/index.ts' }
-    dependencies = [ordered]@{ express = $rootPackage.dependencies.express; dotenv = $rootPackage.dependencies.dotenv; tsx = $rootPackage.devDependencies.tsx }
+    dependencies = [ordered]@{ express = $rootPackage.dependencies.express; dotenv = $rootPackage.dependencies.dotenv; tsx = $rootPackage.devDependencies.tsx; '@azure/identity' = $rootPackage.dependencies.'@azure/identity' }
   }
   $runtimePackage | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'package.json') -Encoding utf8
 

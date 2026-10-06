@@ -13,6 +13,7 @@
     "start": "concurrently -k --success first \"npm:server\" \"npm:dev\""
   },
   "dependencies": {
+    "@azure/identity": "^4.13.3",
     "@vitejs/plugin-react": "latest",
     "dotenv": "latest",
     "express": "latest",
