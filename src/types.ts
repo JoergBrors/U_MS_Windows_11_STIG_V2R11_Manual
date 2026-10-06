@@ -9,3 +9,5 @@ export interface PackageDataset{package:{name:string;release:string;scope:string
 export interface PackageAssessment extends AutomationPlan{id:string;purpose:string;recommendation:string;dependencies:string[];risks:string[];confidence:'high'|'medium'|'low'}
 export type AiProvider='azure'|'openai'|'google';
 export interface AiConfig{provider:AiProvider;apiKey:string;endpoint:string;model:string}
+
+export type AppMeta={name:string;version:string;description:string;author:string;contact:string;license:string;repositoryUrl:string};
