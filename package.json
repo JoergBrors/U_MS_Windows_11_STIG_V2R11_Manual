@@ -4,11 +4,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 5173 --strictPort",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "server": "tsx server/index.ts",
-    "start": "concurrently -k \"npm:server\" \"npm:dev\""
+    "stop:dev": "node scripts/stop-dev-processes.mjs",
+    "prestart": "npm run stop:dev",
+    "start": "concurrently -k --success first \"npm:server\" \"npm:dev\""
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

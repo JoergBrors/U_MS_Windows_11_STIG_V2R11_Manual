@@ -10,6 +10,8 @@ cp .env.example .env   # optional: Azure OpenAI konfigurieren
 npm start
 ```
 
+`npm start` beendet vor dem Start alte, eindeutig als Vite- oder Projekt-API erkannte Prozesse des aktuellen Benutzers auf den Entwicklungsports 5173–5179 und 8787. Ein unbekannter Prozess wird aus Sicherheitsgründen nicht beendet; der Start bricht dann mit der betreffenden PID ab. Vite verwendet anschließend fest Port 5173 und weicht nicht unbemerkt auf eine alte oder zusätzliche Instanz aus. API und Frontend werden gemeinsam beendet, sobald einer der beiden Prozesse endet.
+
 Danach `http://localhost:5173` öffnen. Ohne Azure-Konfiguration ist der STIG-Viewer nutzbar; CSP-Mappings können erst nach Konfiguration geprüft werden.
 
 ## STIG-ZIP importieren
