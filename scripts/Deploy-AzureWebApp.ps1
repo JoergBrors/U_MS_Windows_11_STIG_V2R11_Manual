@@ -27,6 +27,13 @@
   Konfiguration und .env prüfen und das Paket lokal bauen, aber keine Azure-Aufrufe ausführen.
 .PARAMETER AllowPaidSku
   Erlaubt das Neuanlegen eines Plans mit anderer SKU als F1.
+.PARAMETER OverwriteExisting
+  Standardmäßig überschreibt das Skript nichts, was in Azure schon gesetzt ist (vorhandene App Settings,
+  Startbefehl, Redirect-URIs, Anmelde-Konfiguration usw.), sondern ergänzt nur Fehlendes und verschärft
+  höchstens Sicherheitseinstellungen. Mit diesem Schalter werden die Werte aus der JSON erzwungen.
+  Ausnahme: Secrets aus der .env werden immer mit der .env abgeglichen.
+.PARAMETER NoPrune
+  Löscht keine Key-Vault-Secrets (und App Settings), deren Schlüssel nicht mehr in der .env steht.
 .PARAMETER SelectPlan
   Zeigt die vorhandenen Linux-App-Service-Pläne der Subscription zur Auswahl an. Statt eines neuen Plans
   kann so ein bestehender verwendet werden. Alternativ in der JSON appServicePlan.name (und optional
@@ -43,7 +50,9 @@ param(
   [switch]$RotateClientSecret,
   [switch]$DryRun,
   [switch]$AllowPaidSku,
-  [switch]$SelectPlan
+  [switch]$SelectPlan,
+  [switch]$OverwriteExisting,
+  [switch]$NoPrune
 )
 
 Set-StrictMode -Version Latest
@@ -109,10 +118,10 @@ function New-RoleAssignmentIfMissing([string]$PrincipalId, [string]$PrincipalTyp
   }
 }
 
-# Liest ein Secret (oder $null, wenn es fehlt). Wartet bei fehlenden Rechten auf die RBAC-Replikation.
-function Get-KeyVaultSecretValue([string]$Vault, [string]$Name) {
+# Liest ein Secret samt Tags (oder $null, wenn es fehlt). Wartet bei fehlenden Rechten auf die RBAC-Replikation.
+function Get-KeyVaultSecret([string]$Vault, [string]$Name) {
   for ($attempt = 1; $attempt -le 20; $attempt++) {
-    try { return (Invoke-AzTsv keyvault secret show --vault-name $Vault --name $Name --query value) }
+    try { return ((Invoke-Az keyvault secret show --vault-name $Vault --name $Name --query '{value:value,tags:tags}' --output json) -join '') | ConvertFrom-Json }
     catch {
       $message = $_.Exception.Message
       if ($message -match 'SecretNotFound|was not found|not found') { return $null }
@@ -121,13 +130,18 @@ function Get-KeyVaultSecretValue([string]$Vault, [string]$Name) {
     }
   }
 }
-function Set-KeyVaultSecretValue([string]$Vault, [string]$Name, [string]$Value) {
+function Set-KeyVaultSecretValue([string]$Vault, [string]$Name, [string]$Value, [string[]]$Tags = @()) {
   Use-TempFile $Value {
     param($file)
+    $setArgs = @('keyvault', 'secret', 'set', '--vault-name', $Vault, '--name', $Name, '--file', $file, '--encoding', 'utf-8', '--output', 'none')
+    if ($Tags.Count -gt 0) { $setArgs += '--tags'; $setArgs += $Tags }
     for ($attempt = 1; $attempt -le 20; $attempt++) {
-      try { Invoke-Az keyvault secret set --vault-name $Vault --name $Name --file $file --encoding utf-8 --output none | Out-Null; return }
+      try { Invoke-Az @setArgs | Out-Null; return }
       catch {
-        if ($attempt -eq 20 -or $_.Exception.Message -notmatch 'Forbidden|AuthorizationFailed|not authorized|does not have') { throw }
+        $message = $_.Exception.Message
+        # Ein zuvor gelöschtes Secret (Soft Delete) muss erst wiederhergestellt werden, bevor es neu geschrieben werden kann.
+        if ($message -match 'deleted but recoverable|currently in a deleted state') { Invoke-Az keyvault secret recover --vault-name $Vault --name $Name --output none | Out-Null; Start-Sleep -Seconds 8; continue }
+        if ($attempt -eq 20 -or $message -notmatch 'Forbidden|AuthorizationFailed|not authorized|does not have') { throw }
         Write-Note 'Key-Vault-Berechtigung ist noch nicht wirksam, warte…'; Start-Sleep -Seconds 15
       }
     }
@@ -208,9 +222,11 @@ if (-not $useExistingPlan -and -not $SelectPlan -and $sku -ne 'F1' -and -not $Al
 if ($entraEnabled -and $entraAudience -notin 'AzureADMyOrg', 'AzureADMultipleOrgs') { throw "entra.application.signInAudience '$entraAudience' wird nicht unterstützt (AzureADMyOrg oder AzureADMultipleOrgs)." }
 
 # .env lesen: jeder Eintrag wird ein Key-Vault-Secret. Secret-Namen erlauben nur Buchstaben, Ziffern und Bindestrich.
+$envFileFound = $false
 $envSecrets = [ordered]@{}   # App-Setting-Name -> @{ SecretName; Value }
 $envFile = if ([IO.Path]::IsPathRooted($envFileSetting)) { $envFileSetting } else { [IO.Path]::GetFullPath((Join-Path $configDirectory $envFileSetting)) }
 if (Test-Path -LiteralPath $envFile) {
+  $envFileFound = $true
   foreach ($entry in (Read-EnvFile $envFile).GetEnumerator()) {
     if ($entry.Key -in $envExclude -or [string]::IsNullOrEmpty($entry.Value)) { continue }
     $secretName = $entry.Key.ToLowerInvariant().Replace('_', '-')
@@ -321,11 +337,28 @@ else {
   New-RoleAssignmentIfMissing $principalId 'ServicePrincipal' 'Key Vault Secrets User' $vaultId
   Write-Note "Managed Identity $principalId darf Secrets lesen (Key Vault Secrets User)"
 
-  Invoke-Az webapp update --name $appName --resource-group $resourceGroup --https-only $httpsOnly.ToString().ToLower() --output none | Out-Null
-  Invoke-Az webapp config set --name $appName --resource-group $resourceGroup --startup-file $startup --min-tls-version $minTls --http20-enabled true --output none | Out-Null
+  # Vorhandene Konfiguration bleibt unangetastet; gesetzt wird nur, was fehlt oder sicherer wird (-OverwriteExisting erzwingt die JSON-Werte).
+  $current = Invoke-AzJson webapp config show --name $appName --resource-group $resourceGroup --query '{startup:appCommandLine,minTls:minTlsVersion,http2:http20Enabled}'
+  $currentHttpsOnly = [bool](Invoke-AzTsv webapp show --name $appName --resource-group $resourceGroup --query httpsOnly | ForEach-Object { $_ -eq 'true' })
+  if ($httpsOnly -and -not $currentHttpsOnly) { Invoke-Az webapp update --name $appName --resource-group $resourceGroup --https-only true --output none | Out-Null; Write-Note 'HTTPS-only aktiviert' }
+  elseif ($httpsOnly -ne $currentHttpsOnly -and $OverwriteExisting) { Invoke-Az webapp update --name $appName --resource-group $resourceGroup --https-only $httpsOnly.ToString().ToLower() --output none | Out-Null }
+  $configArgs = @()
+  if ([string]::IsNullOrWhiteSpace($current.startup)) { $configArgs += @('--startup-file', $startup) }
+  elseif ($current.startup -ne $startup) {
+    if ($OverwriteExisting) { $configArgs += @('--startup-file', $startup) }
+    else { Write-Warning "Startbefehl '$($current.startup)' ist bereits gesetzt und bleibt unverändert (JSON: '$startup'). Mit -OverwriteExisting wird er ersetzt. Die App erwartet 'npm start'." }
+  }
+  $tlsLower = [string]::IsNullOrWhiteSpace($current.minTls) -or ([version]$current.minTls -lt [version]$minTls)
+  if ($tlsLower -or ($OverwriteExisting -and $current.minTls -ne $minTls)) { $configArgs += @('--min-tls-version', $minTls) }
+  if (-not $current.http2) { $configArgs += @('--http20-enabled', 'true') }
+  if ($configArgs.Count -gt 0) { Invoke-Az webapp config set --name $appName --resource-group $resourceGroup @configArgs --output none | Out-Null; Write-Note "Konfiguration ergänzt: $($configArgs | Where-Object { $_ -like '--*' } | ForEach-Object { $_.TrimStart('-') })" }
+  else { Write-Note 'Konfiguration bereits vollständig, nichts geändert' }
+
   for ($i = 0; $i -lt $allowedIps.Count; $i++) {
     $rule = "allow-$($i + 1)"
-    $null = Test-Az webapp config access-restriction remove --name $appName --resource-group $resourceGroup --rule-name $rule
+    $existingIp = Invoke-AzTsv webapp config access-restriction show --name $appName --resource-group $resourceGroup --query "ipSecurityRestrictions[?name=='$rule'].ip_address | [0]"
+    if ($existingIp -eq $allowedIps[$i] -or ($existingIp -and $allowedIps[$i] -notmatch '/' -and $existingIp -eq "$($allowedIps[$i])/32")) { continue }
+    if ($existingIp) { $null = Test-Az webapp config access-restriction remove --name $appName --resource-group $resourceGroup --rule-name $rule }
     Invoke-Az webapp config access-restriction add --name $appName --resource-group $resourceGroup --rule-name $rule --action Allow --ip-address $allowedIps[$i] --priority (100 + $i) --output none | Out-Null
   }
   if ($allowedIps.Count -gt 0) { Write-Note "Zugriff beschränkt auf: $($allowedIps -join ', ')" }
@@ -335,16 +368,52 @@ else {
 Write-Step "Secrets in Key Vault '$vaultName' übertragen"
 $keyVaultReference = { param($secretName) "@Microsoft.KeyVault(VaultName=$vaultName;SecretName=$secretName)" }
 $appSettings = [ordered]@{ SCM_DO_BUILD_DURING_DEPLOYMENT = 'true' }
+$managedSettingNames = @('SCM_DO_BUILD_DURING_DEPLOYMENT')   # werden immer gesetzt; alle anderen nur, wenn sie noch fehlen
+if ($plainSettings) { $plainSettingNames = @($plainSettings.PSObject.Properties.Name) } else { $plainSettingNames = @() }
 if ($plainSettings) { foreach ($property in $plainSettings.PSObject.Properties) { $appSettings[$property.Name] = [string]$property.Value } }
+$envTagSource = 'managed-by=policy-studio-env'
 foreach ($entry in $envSecrets.GetEnumerator()) {
   $secretName = $entry.Value.SecretName
+  $secretTags = @($envTagSource, "env-name=$($entry.Key)")
   if ($DryRun) { Write-Note "[DryRun] $($entry.Key) -> Secret '$secretName'" }
   else {
-    $current = Get-KeyVaultSecretValue $vaultName $secretName
-    if ($current -ceq $entry.Value.Value) { Write-Note "$($entry.Key) -> '$secretName' (unverändert)" }
-    else { Set-KeyVaultSecretValue $vaultName $secretName $entry.Value.Value; Write-Note "$($entry.Key) -> '$secretName' (geschrieben)" }
+    # Die .env ist die Quelle der Wahrheit: geänderte Werte werden aktualisiert, gleiche bleiben unberührt.
+    $current = Get-KeyVaultSecret $vaultName $secretName
+    if ($null -eq $current) { Set-KeyVaultSecretValue $vaultName $secretName $entry.Value.Value $secretTags; Write-Note "$($entry.Key) -> '$secretName' (neu geschrieben)" }
+    elseif ($current.value -cne $entry.Value.Value) { Set-KeyVaultSecretValue $vaultName $secretName $entry.Value.Value $secretTags; Write-Note "$($entry.Key) -> '$secretName' (Wert geändert, aktualisiert)" }
+    else {
+      Write-Note "$($entry.Key) -> '$secretName' (unverändert)"
+      $tagName = if ($current.tags) { $current.tags.PSObject.Properties['env-name'] } else { $null }
+      if (-not $tagName) { Invoke-Az keyvault secret set-attributes --vault-name $vaultName --name $secretName --tags @secretTags --output none | Out-Null }
+    }
   }
   $appSettings[$entry.Key] = & $keyVaultReference $secretName
+  $managedSettingNames += $entry.Key
+}
+
+# Schlüssel, die aus der .env entfernt wurden, werden auch aus dem Key Vault und den App Settings entfernt.
+# Nur Secrets mit dem Tag des Skripts sind betroffen. Gelöschte Secrets bleiben per Soft Delete wiederherstellbar.
+if (-not $DryRun -and -not $NoPrune) {
+  if (-not $envFileFound) { Write-Note 'Keine .env gefunden, es wird nichts gelöscht.' }
+  elseif ($envSecrets.Count -eq 0) { Write-Warning 'Die .env enthält keine Werte. Aus Sicherheitsgründen wird nichts gelöscht (-NoPrune ist nicht nötig).' }
+  else {
+    $managed = @(Invoke-AzJson keyvault secret list --vault-name $vaultName --query '[?tags."managed-by"==''policy-studio-env''].{name:name,env:tags."env-name"}')
+    $keep = @($envSecrets.Values | ForEach-Object { $_.SecretName })
+    $stale = @($managed | Where-Object { $_.name -notin $keep })
+    if ($stale.Count -gt 0) {
+      $liveSettings = @{}
+      foreach ($item in @(Invoke-AzJson webapp config appsettings list --name $appName --resource-group $resourceGroup)) { $liveSettings[$item.name] = $item.value }
+      foreach ($item in $stale) {
+        Invoke-Az keyvault secret delete --vault-name $vaultName --name $item.name --output none | Out-Null
+        $settingName = if ($item.env) { $item.env } else { $item.name.ToUpperInvariant().Replace('-', '_') }
+        $reference = $liveSettings[$settingName]
+        if ($reference -and $reference -like "@Microsoft.KeyVault(VaultName=$vaultName;SecretName=$($item.name))") {
+          Invoke-Az webapp config appsettings delete --name $appName --resource-group $resourceGroup --setting-names $settingName --output none | Out-Null
+          Write-Note "$settingName entfernt (nicht mehr in der .env): Secret '$($item.name)' gelöscht, App Setting entfernt"
+        } else { Write-Note "Secret '$($item.name)' gelöscht (nicht mehr in der .env)" }
+      }
+    } else { Write-Note 'Keine veralteten Secrets' }
+  }
 }
 
 # --- Entra-ID-Anmeldung -------------------------------------------------------------------------
@@ -357,19 +426,64 @@ if ($entraEnabled) {
     $filter = $entraName.Replace("'", "''")
     $found = @(Invoke-AzJson ad app list --display-name $entraName --query "[?displayName=='$filter'].{id:id,appId:appId}")
     if ($found.Count -gt 1) { throw "Mehrere App-Registrierungen heißen '$entraName'. Benenne sie eindeutig oder lösche Duplikate." }
+    $graphAppId = '00000003-0000-0000-c000-000000000000'; $userReadId = 'e1fe6dd8-ba31-4d61-89e7-88639da4683d'   # Microsoft Graph, delegiert User.Read
+    $createdNow = $false
     if ($found.Count -eq 0) {
       $created = Invoke-AzJson ad app create --display-name $entraName --sign-in-audience $entraAudience --web-redirect-uris @redirectUris --enable-id-token-issuance true
-      $entraClientId = $created.appId; Write-Note "angelegt: $entraClientId"
-    } else {
-      $entraClientId = $found[0].appId
-      Invoke-Az ad app update --id $entraClientId --sign-in-audience $entraAudience --web-redirect-uris @redirectUris --enable-id-token-issuance true --output none | Out-Null
-      Write-Note "aktualisiert: $entraClientId"
+      $entraClientId = $created.appId; $createdNow = $true; Write-Note "angelegt: $entraClientId"
+    } else { $entraClientId = $found[0].appId; Write-Note "vorhanden: $entraClientId" }
+
+    # Vorhandene Registrierungen werden nur ergänzt, nie überschrieben: eigene Redirect-URIs bleiben erhalten.
+    $app = $null
+    for ($attempt = 1; $attempt -le 6; $attempt++) {
+      try { $app = Invoke-AzJson ad app show --id $entraClientId --query '{redirects:web.redirectUris,idToken:web.implicitGrantSettings.enableIdTokenIssuance,audience:signInAudience,access:requiredResourceAccess}'; break }
+      catch { if ($attempt -eq 6) { throw }; Start-Sleep -Seconds 5 }
     }
+    $updateArgs = @()
+    $currentRedirects = @($app.redirects | Where-Object { $_ })
+    $missingRedirects = @($redirectUris | Where-Object { $_ -notin $currentRedirects })
+    if ($missingRedirects.Count -gt 0) { $updateArgs += @('--web-redirect-uris') + @($currentRedirects + $missingRedirects); Write-Note "Redirect-URI ergänzt: $($missingRedirects -join ', ')" }
+    if (-not $app.idToken) { $updateArgs += @('--enable-id-token-issuance', 'true') }
+    if ($app.audience -ne $entraAudience) {
+      if ($OverwriteExisting) { $updateArgs += @('--sign-in-audience', $entraAudience) }
+      else { Write-Warning "signInAudience ist '$($app.audience)' (JSON: '$entraAudience') und bleibt unverändert. Mit -OverwriteExisting wird er ersetzt." }
+    }
+    # Graph-Berechtigung User.Read ergänzen (Profilbild); vorhandene Berechtigungen bleiben erhalten.
+    $access = @($app.access | Where-Object { $_ })
+    $graphEntry = $access | Where-Object { $_.resourceAppId -eq $graphAppId } | Select-Object -First 1
+    $hasUserRead = $graphEntry -and @($graphEntry.resourceAccess | Where-Object { $_.id -eq $userReadId }).Count -gt 0
+    $accessJson = $null
+    if (-not $hasUserRead) {
+      $merged = @($access | Where-Object { $_.resourceAppId -ne $graphAppId })
+      $graphAccess = @(); if ($graphEntry) { $graphAccess = @($graphEntry.resourceAccess) }
+      $graphAccess += [pscustomobject]@{ id = $userReadId; type = 'Scope' }
+      $merged += [pscustomobject]@{ resourceAppId = $graphAppId; resourceAccess = $graphAccess }
+      $accessJson = ConvertTo-Json -InputObject @($merged) -Depth 6
+      Write-Note 'Berechtigung Microsoft Graph User.Read ergänzt'
+    }
+    $applyUpdate = { param($accessFile)
+      $all = @($updateArgs); if ($accessFile) { $all += @('--required-resource-accesses', "@$accessFile") }
+      if ($all.Count -gt 0) { Invoke-Az ad app update --id $entraClientId @all --output none | Out-Null }
+    }
+    if ($accessJson) { Use-TempFile $accessJson { param($file) & $applyUpdate $file } } else { & $applyUpdate $null }
+    if ($updateArgs.Count -eq 0 -and -not $accessJson) { Write-Note 'Registrierung bereits vollständig, nichts geändert' }
 
     if (-not (Test-Az ad sp show --id $entraClientId)) { Invoke-Az ad sp create --id $entraClientId --output none | Out-Null; Write-Note 'Service Principal angelegt' }
     $servicePrincipalId = Invoke-AzTsv ad sp show --id $entraClientId --query id
-    Invoke-Az ad sp update --id $servicePrincipalId --set "appRoleAssignmentRequired=$($entraAssignmentRequired.ToString().ToLower())" --output none | Out-Null
-    Write-Note "Zuweisung erforderlich: $entraAssignmentRequired"
+    $assignmentCurrentlyRequired = (Invoke-AzTsv ad sp show --id $entraClientId --query appRoleAssignmentRequired) -eq 'true'
+    if ($entraAssignmentRequired -and -not $assignmentCurrentlyRequired) { Invoke-Az ad sp update --id $servicePrincipalId --set 'appRoleAssignmentRequired=true' --output none | Out-Null; Write-Note 'Zuweisung erforderlich: aktiviert' }
+    elseif (-not $entraAssignmentRequired -and $assignmentCurrentlyRequired) {
+      if ($OverwriteExisting) { Invoke-Az ad sp update --id $servicePrincipalId --set 'appRoleAssignmentRequired=false' --output none | Out-Null; Write-Note 'Zuweisung erforderlich: deaktiviert' }
+      else { Write-Warning 'Für die Anwendung ist "Zuweisung erforderlich" bereits aktiv und bleibt es (JSON: false). Mit -OverwriteExisting wird sie deaktiviert.' }
+    } else { Write-Note "Zuweisung erforderlich: $assignmentCurrentlyRequired (unverändert)" }
+
+    # Administrator-Zustimmung für User.Read versuchen; ohne passende Rolle stimmen Benutzer beim ersten Login selbst zu.
+    if ($accessJson) {
+      for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try { if ($createdNow) { Start-Sleep -Seconds 10 }; Invoke-Az ad app permission admin-consent --id $entraClientId --output none | Out-Null; Write-Note 'Administrator-Zustimmung erteilt'; break }
+        catch { if ($attempt -eq 3) { Write-Note 'Administrator-Zustimmung nicht möglich (fehlende Rolle). Benutzer stimmen beim ersten Login einmalig zu.' } else { Start-Sleep -Seconds 10 } }
+      }
+    }
 
     # Benutzer und Gruppen zuweisen (Standard-Rolle), nur wenn noch nicht vorhanden.
     $assignmentsUrl = "https://graph.microsoft.com/v1.0/servicePrincipals/$servicePrincipalId/appRoleAssignedTo"
@@ -385,11 +499,11 @@ if ($entraEnabled) {
     if ($entraAssignmentRequired -and $principals.Count -eq 0) { Write-Warning 'assignmentRequired ist aktiv, aber assignedUsers und assignedGroups sind leer. Niemand außer Administratoren kann sich anmelden.' }
 
     # Client-Secret: nur erzeugen, wenn es im Key Vault fehlt (oder -RotateClientSecret), und nie ausgeben.
-    $haveSecret = -not [string]::IsNullOrEmpty((Get-KeyVaultSecretValue $vaultName $entraSecretName))
+    $haveSecret = $null -ne (Get-KeyVaultSecret $vaultName $entraSecretName)
     if ($haveSecret -and -not $RotateClientSecret) { Write-Note "Client-Secret '$entraSecretName' im Key Vault vorhanden" }
     else {
       $password = Invoke-AzTsv ad app credential reset --id $entraClientId --append --display-name "key-vault-$((Get-Date).ToString('yyyyMMdd'))" --years $entraSecretYears --query password
-      Set-KeyVaultSecretValue $vaultName $entraSecretName $password
+      Set-KeyVaultSecretValue $vaultName $entraSecretName $password @('managed-by=policy-studio-entra')
       $password = $null
       Write-Note "Neues Client-Secret im Key Vault als '$entraSecretName' abgelegt"
     }
@@ -400,23 +514,61 @@ if ($entraEnabled) {
 # --- App Settings setzen ------------------------------------------------------------------------
 if (-not $DryRun) {
   Write-Step 'App Settings setzen (Secrets nur als Key-Vault-Referenzen)'
-  $settingsJson = @($appSettings.GetEnumerator() | ForEach-Object { @{ name = $_.Key; value = $_.Value; slotSetting = $false } }) | ConvertTo-Json -AsArray
-  Use-TempFile $settingsJson { param($file) Invoke-Az webapp config appsettings set --name $appName --resource-group $resourceGroup --settings "@$file" --output none | Out-Null }
-  Write-Note "gesetzt: $($appSettings.Keys -join ', ')"
+  # Vorhandene Werte bleiben unverändert. Immer abgeglichen werden nur die vom Skript verwalteten Einträge
+  # (Key-Vault-Referenzen aus der .env, Entra-Secret, Build-Schalter); eigene Einträge aus der JSON nur bei -OverwriteExisting.
+  $liveSettings = @{}
+  foreach ($item in @(Invoke-AzJson webapp config appsettings list --name $appName --resource-group $resourceGroup)) { $liveSettings[$item.name] = $item.value }
+  $toSet = [ordered]@{}; $kept = @()
+  foreach ($entry in $appSettings.GetEnumerator()) {
+    $managed = $entry.Key -in $managedSettingNames -or $entry.Key -eq $clientSecretSetting
+    if ($liveSettings.ContainsKey($entry.Key) -and $liveSettings[$entry.Key] -ceq $entry.Value) { continue }
+    if ($liveSettings.ContainsKey($entry.Key) -and -not $managed -and -not $OverwriteExisting) { $kept += $entry.Key; continue }
+    $toSet[$entry.Key] = $entry.Value
+  }
+  if ($toSet.Count -gt 0) {
+    $settingsJson = @($toSet.GetEnumerator() | ForEach-Object { @{ name = $_.Key; value = $_.Value; slotSetting = $false } }) | ConvertTo-Json -AsArray
+    Use-TempFile $settingsJson { param($file) Invoke-Az webapp config appsettings set --name $appName --resource-group $resourceGroup --settings "@$file" --output none | Out-Null }
+    Write-Note "gesetzt: $($toSet.Keys -join ', ')"
+  } else { Write-Note 'App Settings sind bereits aktuell' }
+  if ($kept.Count -gt 0) { Write-Note "bereits gesetzt, nicht überschrieben: $($kept -join ', ') (mit -OverwriteExisting ersetzen)" }
 
   if ($entraEnabled) {
     Write-Step 'App Service Authentication (Entra ID) konfigurieren'
     $tenantId = $account.tenantId
-    $auth = @{ properties = @{
-      platform = @{ enabled = $true; runtimeVersion = '~1' }
-      globalValidation = @{ requireAuthentication = $true; unauthenticatedClientAction = 'RedirectToLoginPage'; redirectToProvider = 'azureactivedirectory'; excludedPaths = @($entraExcluded) }
-      identityProviders = @{ azureActiveDirectory = @{ enabled = $true; registration = @{ openIdIssuer = "https://login.microsoftonline.com/$tenantId/v2.0"; clientId = $entraClientId; clientSecretSettingName = $clientSecretSetting } } }
-      login = @{ tokenStore = @{ enabled = $false } }
-      httpSettings = @{ requireHttps = $true }
-    } } | ConvertTo-Json -Depth 8
     $authUrl = "https://management.azure.com$appId/config/authsettingsV2?api-version=2022-03-01"
-    Use-TempFile $auth { param($file) Invoke-Az rest --method put --url $authUrl --headers 'Content-Type=application/json' --body "@$file" --output none | Out-Null }
-    Write-Note "Anmeldung aktiv, ausgenommen: $($entraExcluded -join ', ')"
+    $liveAuth = ((Invoke-Az rest --method get --url $authUrl --output json) -join '') | ConvertFrom-Json -AsHashtable
+    $properties = if ($liveAuth -and $liveAuth.properties) { $liveAuth.properties } else { @{} }
+    function Get-Node([hashtable]$Parent, [string]$Key) { if ($Parent[$Key] -isnot [hashtable]) { $Parent[$Key] = @{} }; return $Parent[$Key] }
+
+    $providers = Get-Node (Get-Node $properties 'identityProviders') 'azureActiveDirectory'
+    $registration = Get-Node $providers 'registration'
+    $foreignClient = $registration['clientId'] -and $registration['clientId'] -ne $entraClientId
+    if ($foreignClient -and -not $OverwriteExisting) {
+      Write-Warning "An der Web App ist bereits eine andere Entra-Anmeldung konfiguriert (Client $($registration['clientId'])). Sie bleibt unverändert. Mit -OverwriteExisting wird sie durch '$entraName' ersetzt."
+      $authChanged = $false
+    } else {
+      # Bestehende Auth-Konfiguration wird zusammengeführt, nicht ersetzt: nur die benötigten Felder werden gesetzt.
+      $platform = Get-Node $properties 'platform'; $platform['enabled'] = $true; if (-not $platform['runtimeVersion']) { $platform['runtimeVersion'] = '~1' }
+      $validation = Get-Node $properties 'globalValidation'
+      $validation['requireAuthentication'] = $true
+      if (-not $validation['unauthenticatedClientAction'] -or $OverwriteExisting) { $validation['unauthenticatedClientAction'] = 'RedirectToLoginPage' }
+      if (-not $validation['redirectToProvider'] -or $OverwriteExisting) { $validation['redirectToProvider'] = 'azureactivedirectory' }
+      $validation['excludedPaths'] = @(@($validation['excludedPaths']) + $entraExcluded | Where-Object { $_ } | Select-Object -Unique)
+      $registration['openIdIssuer'] = "https://login.microsoftonline.com/$tenantId/v2.0"
+      $registration['clientId'] = $entraClientId
+      $registration['clientSecretSettingName'] = $clientSecretSetting
+      $providers['enabled'] = $true
+      # Token Store und Scope User.Read werden für Anzeige von Benutzer und Profilbild benötigt.
+      (Get-Node (Get-Node $properties 'login') 'tokenStore')['enabled'] = $true
+      $login = Get-Node $providers 'login'
+      $loginParameters = @($login['loginParameters'] | Where-Object { $_ })
+      if (-not ($loginParameters | Where-Object { $_ -like 'scope=*' })) { $loginParameters += 'scope=openid profile email offline_access User.Read' }
+      $login['loginParameters'] = $loginParameters
+      (Get-Node $properties 'httpSettings')['requireHttps'] = $true
+      $authChanged = $true
+      Use-TempFile (@{ properties = $properties } | ConvertTo-Json -Depth 12) { param($file) Invoke-Az rest --method put --url $authUrl --headers 'Content-Type=application/json' --body "@$file" --output none | Out-Null }
+    }
+    if ($authChanged) { Write-Note "Anmeldung aktiv, ausgenommen: $($entraExcluded -join ', ')" }
   }
 }
 
