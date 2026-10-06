@@ -7,6 +7,16 @@ build/
 out/
 *.tsbuildinfo
 
+# Locally supplied DISA policy package
+Package/
+
+# Downloaded or extracted DISA STIG source packages
+*_STIG.zip
+*_Manual_STIG/
+*-xccdf.xml
+STIG_unclass*.xsl
+DoW-DISA-logos*
+
 # Tool and test caches
 .vite/
 .cache/
@@ -44,4 +54,3 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-
