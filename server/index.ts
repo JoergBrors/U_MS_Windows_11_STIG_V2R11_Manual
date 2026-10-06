@@ -4,6 +4,16 @@ import type { AiConfig,StigRule, CspMapping,PackagePolicy } from '../src/types.j
 
 type ResolvedMapping=CspMapping&{id:string};
 const documentedMappings:Record<string,Omit<ResolvedMapping,'id'>>={
+  'ENTR-ID-000140':{
+    omaUri:'',dataType:'string',value:'',confidence:'verified',targetType:'entra_portal',platform:'Microsoft Entra ID',controlPlane:'Microsoft Graph v1.0 – tenantweite Password Rule Settings',
+    automationMethod:'Idempotentes PowerShell-Skript mit Microsoft Graph groupSettings API',apiEndpoint:'/groupSettings/{groupSettingId}',permissions:['GroupSettings.ReadWrite.All','Entra-Rolle: Authentication Policy Administrator'],
+    artifacts:['PowerShell-Skript Set-EntraSmartLockout.ps1','Deklarative Konfiguration password-protection.json mit LockoutThreshold=3 und LockoutDurationInSeconds=900','Vorher-/Nachher-Export der vollständigen values-Collection'],
+    automationSteps:['Mit Connect-MgGraph -Scopes GroupSettings.ReadWrite.All authentifizieren','Password Rule Settings Template über GET /groupSettingTemplates ermitteln','Bestehende tenantweite Password Rule Settings über GET /groupSettings lesen','Falls kein Setting existiert, aus dem Template ein vollständiges Setting erzeugen und über POST /groupSettings anlegen','Falls es existiert, die vollständige values-Collection beibehalten, LockoutThreshold auf 3 und LockoutDurationInSeconds auf 900 setzen und über PATCH /groupSettings/{groupSettingId} aktualisieren','Vorher-/Nachher-Zustand ohne Geheimnisse als Pipeline-Artefakt protokollieren'],
+    validationSteps:['GET /groupSettings ausführen und LockoutThreshold=3 sowie LockoutDurationInSeconds=900 prüfen','Im Entra Admin Center unter Entra ID > Authentication methods > Password protection gegenprüfen','Microsoft-Entra-Auditprotokolle auf die Konfigurationsänderung prüfen'],
+    rollbackSteps:['Gesicherte vollständige values-Collection über PATCH /groupSettings/{groupSettingId} wiederherstellen','Wiederhergestellte Werte per GET und im Portal validieren'],
+    manualSteps:['Im Entra Admin Center als Authentication Policy Administrator Lockout threshold auf 3 und Lockout duration auf 900 setzen'],
+    rationale:'Verifizierte Microsoft-Graph-v1.0-Automatisierung. Password Rule Settings sind tenantweite groupSettings. Änderungen erfolgen per PATCH /groupSettings/{groupSettingId}; dabei muss die vollständige values-Collection gesendet werden. Quellen: https://learn.microsoft.com/en-us/graph/group-directory-settings und https://learn.microsoft.com/en-us/graph/api/groupsetting-update?view=graph-rest-1.0'
+  },
   'WN11-00-000032':{
     omaUri:'./Device/Vendor/MSFT/BitLocker/SystemDrivesMinimumPINLength',
     dataType:'string',
@@ -35,6 +45,9 @@ Für jede ID:
 3. Benenne automationMethod, einen dokumentierten Microsoft-Graph-apiEndpoint, die minimal plausiblen permissions und konkrete automationSteps.
 4. Nutze für Intune-Konfigurationsprofile je nach Objekttyp /deviceManagement/configurationPolicies oder /deviceManagement/deviceConfigurations mit DeviceManagementConfiguration.ReadWrite.All; für Intune-Skripte /deviceManagement/deviceManagementScripts bzw. /deviceManagement/deviceHealthScripts mit DeviceManagementScripts.ReadWrite.All; für Conditional Access /identity/conditionalAccess/policies mit Policy.Read.All und Policy.ReadWrite.ConditionalAccess.
 5. Gib platform, controlPlane, erzeugbare artifacts, validationSteps und rollbackSteps an. Bevorzuge Graph v1.0; kennzeichne beta-Abhängigkeiten. Falls keine unterstützte API belastbar ist, lasse apiEndpoint leer und liefere manualSteps.
+6. Suche plattformspezifisch und nicht nur nach Intune: Windows zuerst Settings Catalog/Endpoint Security/CSP/OMA-URI, dann Graph und PowerShell/DSC; Entra/M365 zuerst Graph v1.0 und PowerShell, dann beta, Terraform/AzAPI/Bicep; Linux zuerst Ansible, dann andere Konfigurationsmanager und Shell; Netzwerkgeräte zuerst Hersteller-API/NETCONF/RESTCONF, Ansible und Terraform; Kubernetes zuerst Manifeste/Helm/Operator; andere Clouds zuerst nativer IaC-Provider und Anbieter-API/CLI.
+7. manual_only ist der letzte Rückfall. Prüfe vorher mindestens drei plausible Wege aus API/CLI, IaC, Konfigurationsmanagement und Skript. Begründe ausdrücklich, warum sie nicht unterstützt oder nicht belegbar sind. Ein im Fixtext beschriebener Portalweg schließt eine API-Automatisierung nicht aus.
+8. automationMethod muss ein konkretes Werkzeug, die Schnittstelle und das erzeugte Artefakt nennen. Plane einen idempotenten Ist/Soll-Vergleich, minimale Änderung, Validierung und Rollback. Erfinde keine Endpunkte, Cmdlets, Provider-Ressourcen oder Berechtigungen.
 
 Policies:\n${JSON.stringify(policies)}`,reasoning:{effort:'medium'},text:{format:{type:'json_schema',name:'package_assessments',strict:true,schema:{type:'object',additionalProperties:false,properties:{assessments:{type:'array',items:{type:'object',additionalProperties:false,properties:{id:{type:'string'},purpose:{type:'string'},recommendation:{type:'string'},dependencies:{type:'array',items:{type:'string'}},risks:{type:'array',items:{type:'string'}},confidence:{type:'string',enum:['high','medium','low']},targetType:{type:'string',enum:['intune_policy','entra_portal','m365_portal','configuration_management','native_api','os_native','application_configuration','cloud_portal','local_script','manual_only','not_applicable']},platform:{type:'string'},controlPlane:{type:'string'},automationMethod:{type:'string'},apiEndpoint:{type:'string'},permissions:{type:'array',items:{type:'string'}},artifacts:{type:'array',items:{type:'string'}},automationSteps:{type:'array',items:{type:'string'}},validationSteps:{type:'array',items:{type:'string'}},rollbackSteps:{type:'array',items:{type:'string'}},manualSteps:{type:'array',items:{type:'string'}}},required:['id','purpose','recommendation','dependencies','risks','confidence','targetType','platform','controlPlane','automationMethod','apiEndpoint','permissions','artifacts','automationSteps','validationSteps','rollbackSteps','manualSteps']}}},required:['assessments']}}}});if(!response.ok)return res.status(502).json({error:`${ai.provider} ${response.status}: ${await response.text()}`});const json=await response.json() as {output_text?:string;output?:Array<{content?:Array<{type?:string;text?:string}>}>};const content=json.output_text??json.output?.flatMap(item=>item.content??[]).find(item=>item.type==='output_text')?.text;if(!content)throw new Error('Leere Modellantwort');return res.json(JSON.parse(content))}catch(error){return res.status(500).json({error:error instanceof Error?error.message:'Unbekannter Fehler'})}
 });
@@ -73,11 +86,23 @@ AUTOMATISIERUNG
 - Wenn keine unterstützte Automatisierung belegt ist, lasse apiEndpoint leer, wähle manual_only und liefere konkrete manualSteps. Erfinde keine API, CLI, Modulnamen oder Parameter.
 - OMA-URI/CSP-Felder dürfen nur bei targetType=intune_policy und einer echten CSP-Abbildung gesetzt werden. Eine Portal-Einstellung ist niemals allein aufgrund ihres Effekts eine OMA-URI.
 
+VERBINDLICHE PLATTFORM-PRIORITÄT
+- Windows Workstation/Windows Server: Prüfe in dieser Reihenfolge Settings Catalog/Endpoint Security, Policy CSP oder direkten CSP, ADMX-backed CSP, dokumentierte Intune-Graph-API, PowerShell/DSC und zuletzt lokale Skripte. Gib nur bei einer echten CSP-Abbildung eine OMA-URI aus.
+- Microsoft Entra ID/Microsoft 365/Azure: Prüfe zuerst Microsoft Graph v1.0 und die produktspezifischen PowerShell-Module, danach Graph beta, Azure CLI/REST, Terraform/AzAPI und Bicep/Deployment Scripts. Bicep allein ist nur geeignet, wenn eine ARM-Ressource existiert. Portal-Schritte sind kein Grund für manual_only, solange dieselbe Einstellung über eine dokumentierte API erreichbar ist.
+- Linux/Unix: Prüfe zuerst ein idempotentes Ansible-Modul oder eine Role, danach Puppet/Chef/Salt, Hersteller-API beziehungsweise CLI und zuletzt ein robustes POSIX-Shell-/Bash-Skript. Bevorzuge Module gegenüber shell/command und liefere konkrete Artefakte.
+- Netzwerkgeräte/Appliances: Prüfe Hersteller-API, NETCONF/RESTCONF, Ansible Collection, Terraform Provider und Hersteller-CLI in dieser Reihenfolge.
+- Kubernetes/Container: Prüfe deklarative Manifeste, Helm/Kustomize, Operator/API und erst danach Shell.
+- Datenbanken/Anwendungen: Prüfe Hersteller-API/CLI, Konfigurationsdatei oder SQL, Konfigurationsmanagement und erst danach Skripte.
+- Cloud außerhalb Microsoft: Prüfe zuerst native IaC-Provider und Anbieter-API/CLI, danach Konfigurationsmanagement und Shell.
+- manual_only ist ausschließlich der letzte Rückfall. Bevor du manual_only setzt, musst du Graph/Hersteller-API, PowerShell/CLI, Terraform/OpenTofu/Bicep, Konfigurationsmanagement und lokale Skripte auf Eignung geprüft haben. Nenne in rationale konkret, warum jeder realistische Weg nicht unterstützt oder nicht sicher belegbar ist.
+- automationMethod darf niemals nur den targetType wie manual_only, os_native oder configuration_management wiederholen. Nenne Werkzeug, Schnittstelle und Artefakt, zum Beispiel „PowerShell + Microsoft Graph groupSettings“, „Ansible ansible.posix.firewalld“ oder „Intune Custom OMA-URI via Graph“.
+- Wenn eine API nur generische Key/Value-Settings anbietet, suche Template und vorhandenes Setting, erhalte beim PATCH alle unbekannten Werte und ändere ausschließlich die geforderten Schlüssel. Plane Ist-Zustand, idempotenten Vergleich, Validierung und Rollback.
+
 RECHERCHE- UND MATCHING-REIHENFOLGE
 1. Identifiziere Produkt, Plattform, Version und technische Steuerungsebene.
-2. Prüfe ein natives deklaratives Konfigurationsverfahren oder eine dokumentierte Hersteller-API.
-3. Prüfe Konfigurationsmanagement und Infrastructure as Code.
-4. Prüfe erst danach lokale Skripte oder manuelle Umsetzung.
+2. Leite aus der Plattform die oben definierte Werkzeug-Priorität ab und prüfe mindestens die drei plausibelsten Automatisierungswege.
+3. Wähle den am besten dokumentierten, idempotenten und versionsgerechten Weg; nutze einen zweiten Weg als Alternative in artifacts oder manualSteps.
+4. Prüfe erst nach API, IaC, Konfigurationsmanagement und Skript eine rein manuelle Umsetzung.
 5. Für Windows/Intune zusätzlich: direkter CSP, Policy CSP, ADMX-backed CSP, Settings Catalog und Endpoint Security. Nutze Registry, GPO-Pfad und Fixtext gemeinsam; ein Registry-Pfad allein ist keine OMA-URI.
 
 QUALITÄTSREGELN
