@@ -1,7 +1,5 @@
 import 'dotenv/config';
 import express from 'express';
-import{readFile}from'node:fs/promises';
-import{resolve}from'node:path';
 import type { StigRule, CspMapping,PackagePolicy } from '../src/types.js';
 
 type ResolvedMapping=CspMapping&{id:string};
@@ -17,10 +15,6 @@ const documentedMappings:Record<string,Omit<ResolvedMapping,'id'>>={
 
 const app=express();app.use(express.json({limit:'1mb'}));
 app.get('/api/health',(_req,res)=>res.json({ok:true,azureConfigured:Boolean(process.env.AZURE_OPENAI_ENDPOINT&&process.env.AZURE_OPENAI_API_KEY&&process.env.AZURE_OPENAI_DEPLOYMENT),api:'responses-v1',deployment:process.env.AZURE_OPENAI_DEPLOYMENT??null}));
-const packageRoot=resolve('Package/U_Intune_Policy_Package_July_2026');
-function packagePath(id:string){const path=resolve(packageRoot,id);if(!path.startsWith(`${packageRoot}/`)||!id.startsWith('Intune Policies/')||!id.endsWith('.json'))throw new Error('Ungültiger Paketpfad');return path}
-function decodePackage(buffer:Buffer){return buffer[0]===0xff&&buffer[1]===0xfe?buffer.subarray(2).toString('utf16le'):buffer.toString('utf8').replace(/^\uFEFF/,'')}
-app.post('/api/package/export',async(req,res)=>{try{const ids=req.body?.ids as string[];if(!Array.isArray(ids)||!ids.length||ids.length>50)return res.status(400).json({error:'Bitte 1 bis 50 Policies auswählen.'});const policies=await Promise.all(ids.map(async id=>JSON.parse(decodePackage(await readFile(packagePath(id))))));return res.json({schemaVersion:'1.0',displayName:'Auswahl aus DISA STIG Intune Policy Package · July 2026',generatedAt:new Date().toISOString(),warning:'Vor einem Produktiveinsatz vollständig in einem Test-Ring validieren.',policies})}catch(error){return res.status(400).json({error:error instanceof Error?error.message:'Paket konnte nicht erstellt werden.'})}});
 app.post('/api/package/analyze',async(req,res)=>{
  const policies=(req.body?.policies??[]) as PackagePolicy[];if(!Array.isArray(policies)||!policies.length||policies.length>20)return res.status(400).json({error:'Bitte 1 bis 20 Policies übergeben.'});
  const endpoint=process.env.AZURE_OPENAI_ENDPOINT?.replace(/\/$/,'').replace(/\/openai\/v1$/,'');const key=process.env.AZURE_OPENAI_API_KEY;const deployment=process.env.AZURE_OPENAI_DEPLOYMENT;

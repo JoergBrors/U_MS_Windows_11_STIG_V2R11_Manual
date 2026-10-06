@@ -7,8 +7,6 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "generate:package": "tsx scripts/generate-package-data.ts",
-    "generate": "npm run generate:package",
     "server": "tsx server/index.ts",
     "start": "concurrently -k \"npm:server\" \"npm:dev\""
   },

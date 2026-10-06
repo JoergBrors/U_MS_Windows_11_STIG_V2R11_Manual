@@ -34,14 +34,14 @@ Die Zugangsdaten liegen ausschließlich im lokalen API-Prozess. In `.env` werden
 
 ## Intune Policy Package
 
-Der zweite Arbeitsbereich **Policy Package** liest die lokal mitgelieferten Exporte unter `Package/U_Intune_Policy_Package_July_2026`. Dieser Ordner wird bewusst nicht in Git aufgenommen. Die Übersicht kategorisiert die Policies nach Profiltyp, Produkt, Plattform und **Version**. Policies können ausgewählt, durch Azure OpenAI hinsichtlich Zweck, Abhängigkeiten und Risiken erklärt und anschließend als gemeinsames JSON-Paket exportiert werden.
+Der zweite Arbeitsbereich **Policy Package** importiert ein originales DISA Intune Policy Package direkt als ZIP-Datei. Ein manuelles Entpacken und ein lokaler `Package/`-Ordner sind nicht erforderlich. Die Übersicht kategorisiert die enthaltenen Policy-JSONs nach Profiltyp, Produkt, Plattform und **Version**. Policies können ausgewählt, durch Azure OpenAI hinsichtlich Zweck, Abhängigkeiten und Risiken erklärt und anschließend mit ihren unveränderten Originalobjekten als gemeinsames JSON-Paket exportiert werden.
 
-Aktuelle offizielle DISA-Pakete stehen unter [DoD Cyber Exchange – Group Policy Objects](https://www.cyber.mil/stigs/gpo) bereit. Beim Austausch eines Pakets muss immer geprüft werden, ob die jeweilige STIG- und Policy-Version zur vorgesehenen Zielumgebung passt; gleichnamige Policies unterschiedlicher Releases sind nicht automatisch austauschbar.
+Vorgehen:
 
-Nach Änderungen am DISA-Paket werden die Metadaten neu erzeugt:
+1. Das aktuelle Paket unter [DoD Cyber Exchange – Group Policy Objects](https://www.cyber.mil/stigs/gpo) herunterladen.
+2. Im Arbeitsbereich **Policy Package** auf **Intune Policy ZIP importieren** klicken.
+3. Die unveränderte ZIP-Datei auswählen.
+4. Package-Release und erkannte Policy-Versionen prüfen.
+5. Gewünschte Policies auswählen, optional mit KI erklären lassen und das Auswahlpaket exportieren.
 
-```bash
-npm run generate:package
-```
-
-Mit `npm run generate` wird die Paketübersicht aktualisiert. Die Original-Policies bleiben unverändert. Entsprechend der Hersteller-README muss jede zusammengestellte Auswahl vor dem Produktiveinsatz in einer repräsentativen Testumgebung geprüft werden.
+Die ZIP-Datei und ihre Policy-Inhalte werden ausschließlich lokal im Browser verarbeitet und nicht zum Server übertragen. Das Repository enthält deshalb weder das originale Intune Policy Package noch daraus generierte Metadaten. Beim Austausch eines Pakets muss immer geprüft werden, ob die jeweilige STIG- und Policy-Version zur vorgesehenen Zielumgebung passt; gleichnamige Policies unterschiedlicher Releases sind nicht automatisch austauschbar. Jede zusammengestellte Auswahl muss vor dem Produktiveinsatz in einer repräsentativen Testumgebung geprüft werden.
